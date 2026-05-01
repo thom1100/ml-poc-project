@@ -1,0 +1,2 @@
+model_key,model_name,model_path,mae,rmse
+model_a,Model A,C:\Users\robin\ml-poc-project\models\model_a.pkl,124.32999394377043,205.87513078006597
