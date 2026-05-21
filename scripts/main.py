@@ -1,170 +1,136 @@
 from __future__ import annotations
-
 import importlib.util
 import os
 import subprocess
 import sys
+import pickle
 from pathlib import Path
 from typing import Any
-
 from dotenv import load_dotenv
 
-
+# --- CHARGEMENT DES MODULES DYNAMIQUE ---
 def _load_module(module_name: str, module_path: Path) -> Any:
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not load module `{module_name}` from {module_path}")
-
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
-
 SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
 
-config = _load_module("project_config", SCRIPT_DIR.parent / "src" / "config.py")
+# Chargement de la config projet
+config = _load_module("project_config", PROJECT_ROOT / "src" / "config.py")
 sys.modules["config"] = config
-load_dotenv(config.ENV_FILE)
-PROJECT_ROOT = config.PROJECT_ROOT
-SRC_DIR = config.SRC_DIR
-APP_ENTRYPOINT = config.APP_ENTRYPOINT
-MODELS = config.MODELS
-STREAMLIT_HOST = config.STREAMLIT_HOST
-STREAMLIT_PORT = config.STREAMLIT_PORT
+load_dotenv(PROJECT_ROOT / ".env")
 
-data_module = _load_module("project_data", SRC_DIR / "data.py")
-metrics_module = _load_module("project_metrics", SRC_DIR / "metrics.py")
-model_io_module = _load_module("project_model_io", SRC_DIR / "model_io.py")
-results_module = _load_module("project_results", SRC_DIR / "results.py")
+# Import des fonctions métier depuis src/
+data_module = _load_module("project_data", PROJECT_ROOT / "src" / "data.py")
+metrics_module = _load_module("project_metrics", PROJECT_ROOT / "src" / "metrics.py")
+results_module = _load_module("project_results", PROJECT_ROOT / "src" / "results.py")
+model_io_module = _load_module("project_model_io", PROJECT_ROOT / "src" / "model_io.py")
 
 load_dataset_split = data_module.load_dataset_split
 compute_metrics = metrics_module.compute_metrics
-load_model = model_io_module.load_model
 write_metrics = results_module.write_metrics
+load_model = model_io_module.load_model
 
+def _evaluate_selected_models(X_test: Any, y_test: Any) -> list[dict[str, object]]:
+    rows = []
+    models_dir = PROJECT_ROOT / "models"
+    
+    # On charge l'encoder commun
+    encoder_path = models_dir / "encoder.pkl"
+    if not encoder_path.exists():
+        raise FileNotFoundError(f"L'encodeur est introuvable à {encoder_path}")
+        
+    with open(encoder_path, "rb") as f:
+        encoder = pickle.load(f)
 
-def _validate_models_config() -> None:
-    if not MODELS:
-        raise ValueError("config.MODELS is empty. Add your trained models first.")
+    # Modèles définis dans config.py
+    target_models = ["baseline", "xgboost", "optuna"]
 
-    for model_key, model_config in MODELS.items():
-        if "path" not in model_config:
-            raise ValueError(
-                f"Missing `path` for model `{model_key}` in config.MODELS."
-            )
+    for model_key in target_models:
+        if model_key not in config.MODELS:
+            continue
+            
+        model_config = config.MODELS[model_key]
+        m_path = PROJECT_ROOT / model_config["path"]
+        
+        if not m_path.exists():
+            print(f"⏩ Fichier {m_path.name} introuvable, skip.")
+            continue
+        
+        print(f"🧐 Évaluation en cours : {model_key}...")
+        try:
+            # Chargement du modèle
+            model = load_model(m_path)
+            
+            # Transformation unifiée pour TOUS les modèles (plus de PCA spécifique)
+            X_test_input = encoder.transform(X_test)
+            
+            # Prédiction
+            y_pred = model.predict(X_test_input)
+            metrics = compute_metrics(y_test, y_pred)
 
+            # Stockage des résultats
+            row = {
+                "model_key": model_key,
+                "model_name": model_config.get("name", model_key),
+                "model_path": str(model_config["path"]),
+            }
+            row.update({k: float(v) for k, v in metrics.items()})
+            rows.append(row)
+            print(f"✅ {model_key} évalué avec succès.")
 
-def _validate_app_entrypoint() -> None:
-    app_module = _load_module("project_app", APP_ENTRYPOINT)
-    if not hasattr(app_module, "build_app") or not callable(app_module.build_app):
-        raise TypeError("app.build_app must be a callable Streamlit entry point.")
-
-
-def _streamlit_env() -> dict[str, str]:
-    env = os.environ.copy()
-    pythonpath_entries = [str(SRC_DIR)]
-    existing_pythonpath = env.get("PYTHONPATH", "")
-    if existing_pythonpath:
-        pythonpath_entries.append(existing_pythonpath)
-
-    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
-    return env
-
-
-def _load_dataset() -> tuple[Any, Any, Any, Any]:
-    dataset_split = load_dataset_split()
-    if not isinstance(dataset_split, tuple) or len(dataset_split) != 4:
-        raise ValueError(
-            "data.load_dataset_split() must return exactly four values: "
-            "(X_train, X_test, y_train, y_test)."
-        )
-
-    return dataset_split
-
-
-def _evaluate_models(X_test: Any, y_test: Any) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
-
-    for model_key, model_config in MODELS.items():
-        model = load_model(Path(model_config["path"]))
-
-        if not hasattr(model, "predict"):
-            raise TypeError(
-                f"Loaded object for model `{model_key}` does not expose a `predict` method."
-            )
-
-        y_pred = model.predict(X_test)
-        metrics = compute_metrics(y_test, y_pred)
-
-        if not isinstance(metrics, dict) or not metrics:
-            raise ValueError(
-                "metrics.compute_metrics() must return a non-empty dictionary."
-            )
-
-        row: dict[str, object] = {
-            "model_key": model_key,
-            "model_name": model_config.get("name", model_key),
-            "model_path": str(model_config["path"]),
-        }
-
-        for metric_name, metric_value in metrics.items():
-            row[metric_name] = float(metric_value)
-
-        rows.append(row)
-
+        except Exception as e:
+            print(f"❌ Erreur sur {model_key} : {e}")
+            
     return rows
 
-
 def _launch_streamlit() -> None:
-    if not APP_ENTRYPOINT.exists():
-        raise FileNotFoundError(f"Streamlit entry point not found: {APP_ENTRYPOINT}")
+    app_path = PROJECT_ROOT / "src" / "app.py"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(PROJECT_ROOT / "src") + os.pathsep + env.get("PYTHONPATH", "")
 
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "streamlit",
-            "run",
-            str(APP_ENTRYPOINT),
-            "--server.address",
-            STREAMLIT_HOST,
-            "--server.port",
-            str(STREAMLIT_PORT),
-        ],
-        check=True,
-        cwd=PROJECT_ROOT,
-        env=_streamlit_env(),
-    )
-
+    print(f"\n🚀 Lancement du Dashboard sur http://{config.STREAMLIT_HOST}:{config.STREAMLIT_PORT}")
+    try:
+        subprocess.run([
+            sys.executable, "-m", "streamlit", "run", str(app_path),
+            "--server.address", config.STREAMLIT_HOST,
+            "--server.port", str(config.STREAMLIT_PORT),
+        ], check=True, cwd=PROJECT_ROOT, env=env)
+    except KeyboardInterrupt:
+        print("\n👋 Arrêt du dashboard.")
 
 def main() -> None:
-    _validate_app_entrypoint()
-    _validate_models_config()
-
+    print("--- Pipeline NBA Predictor ---")
+    
+    # 1. Chargement Data & Évaluation
+    print("📊 Chargement des données et calcul des métriques...")
     try:
-        _, X_test, _, y_test = _load_dataset()
-    except NotImplementedError as exc:
-        raise NotImplementedError(
-            "Dataset loading is still a template placeholder. "
-            "Implement data.load_dataset_split()."
-        ) from exc
+        # Récupération du split de test
+        _, X_test, _, y_test = load_dataset_split()
+        
+        # Évaluation des modèles
+        metrics_rows = _evaluate_selected_models(X_test, y_test)
+        
+        if metrics_rows:
+            # Sauvegarde dans results/model_metrics.csv
+            metrics_df = write_metrics(metrics_rows)
+            print("\n📊 TABLEAU RÉCAPITULATIF DES SCORES :")
+            print("--------------------------------------")
+            print(metrics_df.to_string(index=False))
+            print("--------------------------------------")
+        else:
+            print("⚠️ Aucun modèle n'a pu être évalué.")
+            
+    except Exception as e:
+        print(f"❌ Erreur lors de la phase d'évaluation : {e}")
 
-    try:
-        metrics_rows = _evaluate_models(X_test, y_test)
-    except NotImplementedError as exc:
-        raise NotImplementedError(
-            "Metric computation is still a template placeholder. "
-            "Implement metrics.compute_metrics()."
-        ) from exc
-
-    metrics_df = write_metrics(metrics_rows)
-
-    print("Model evaluation completed. Metrics saved to results/model_metrics.csv")
-    print(metrics_df.to_string(index=False))
-    print(f"\nLaunching Streamlit on http://{STREAMLIT_HOST}:{STREAMLIT_PORT} ...")
-
+    # 2. Lancement Streamlit
     _launch_streamlit()
-
 
 if __name__ == "__main__":
     main()

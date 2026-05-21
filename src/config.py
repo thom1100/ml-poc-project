@@ -1,41 +1,38 @@
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parent.parent
-SRC_DIR = PROJECT_ROOT / "src"
+# --- CHEMINS DE BASE ---
+# On remonte d'un niveau depuis src/ pour arriver à la racine du projet
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# Dossiers principaux
 DATA_DIR = PROJECT_ROOT / "data"
-LOGS_DIR = PROJECT_ROOT / "logs"
 MODELS_DIR = PROJECT_ROOT / "models"
-NOTEBOOKS_DIR = PROJECT_ROOT / "notebooks"
-PLOTS_DIR = PROJECT_ROOT / "plots"
 RESULTS_DIR = PROJECT_ROOT / "results"
-SCRIPTS_DIR = PROJECT_ROOT / "scripts"
-TESTS_DIR = PROJECT_ROOT / "tests"
+SRC_DIR = PROJECT_ROOT / "src"
 
-for dir in [
-    DATA_DIR,
-    LOGS_DIR,
-    MODELS_DIR,
-    NOTEBOOKS_DIR,
-    PLOTS_DIR,
-    RESULTS_DIR,
-    SCRIPTS_DIR,
-    TESTS_DIR,
-]:
-    dir.mkdir(exist_ok=True)
-
+# --- FICHIERS ---
 ENV_FILE = PROJECT_ROOT / ".env"
-APP_ENTRYPOINT = PROJECT_ROOT / "src" / "app.py"
+# La variable qui manquait :
 MODEL_METRICS_FILE = RESULTS_DIR / "model_metrics.csv"
 
+# --- CONFIGURATION DES MODÈLES ---
+# Utilisé par scripts/main.py pour l'évaluation
+MODELS = {
+    "baseline": {
+        "name": "Baseline Model (Moving Average)",
+        "path": "models/model_baseline.pkl"
+    },
+    "xgboost": {
+        "name": "XGBoost Regressor",
+        "path": "models/model_xgboost.pkl"
+    },
+    "optuna": {
+        "name": "Random Forest (Optuna Optimized)",
+        "path": "models/model_optuna.pkl"
+    }
+}
+
+# --- PARAMÈTRES INTERFACE (STREAMLIT) ---
 STREAMLIT_HOST = "localhost"
 STREAMLIT_PORT = 8501
-
-# Students must replace this example with their trained models.
-# Each entry must point to a serialized model saved as `.joblib`, `.pkl`, or `.pickle`.
-MODELS = {
-    "model_a": {
-        "name": "Model A",
-        "description": "A simple baseline model.",
-        "path": MODELS_DIR / "model_a.pkl",
-    },
-}
+APP_ENTRYPOINT = SRC_DIR / "app.py"

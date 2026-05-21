@@ -1,2 +1,4 @@
-model_key,model_name,model_path,mae,rmse
-model_a,Model A,C:\Users\robin\ml-poc-project\models\model_a.pkl,124.32999394377043,205.87513078006597
+model_key,model_name,model_path,MAE,R2,RMSE
+baseline,Baseline Model (Moving Average),models/model_baseline.pkl,4.948304653167725,0.4840226173400879,6.364039554456241
+xgboost,XGBoost Regressor,models/model_xgboost.pkl,4.754624843597412,0.525810718536377,6.10089287398683
+optuna,Random Forest (Optuna Optimized),models/model_optuna.pkl,4.819416616925514,0.5138253705156453,6.177513192096987
